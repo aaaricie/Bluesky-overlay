@@ -1,6 +1,6 @@
 # Bluesky Overlay
 
-[^2]Desktop overlay application that displays your Bluesky feed as rolling timeline notifications on top of other applications.
+Desktop overlay application that displays your Bluesky feed as rolling timeline notifications on top of other applications.
 
 ## Features
 
@@ -26,12 +26,12 @@
 npm install
 ```
 
-2. [^1]Run the app - it will create `config.json` in your user data directory and open it for editing:
+2. Run the app - it will create `config.json` in your user data directory and open it for editing:
 ```bash
 npm run dev
 ```
 
-3. [^1]Configure your credentials and preferences in `config.json`:
+3. Configure your credentials and preferences in `config.json`:
 ```json
 {
   "auth": {
@@ -74,7 +74,7 @@ npm run dev
 - `customFeedUri`: Custom feed source (AT-URI or bsky.app URL)
 
 ### Feed Sources
-[^1]Supports multiple feed types:
+Supports multiple feed types:
 - **Timeline**: Default following feed (leave `customFeedUri` empty)
 - **Custom feeds**: `at://did:plc:*/app.bsky.feed.generator/*` or `bsky.app/profile/*/feed/*`
 - **Lists**: `at://did:plc:*/app.bsky.graph.list/*` or `bsky.app/profile/*/lists/*`
@@ -82,7 +82,6 @@ npm run dev
 ## Development
 
 ### Scripts
-[^2]
 ```bash
 npm run dev          # Development with hot reload
 npm run build        # Build for production
@@ -97,7 +96,6 @@ npm run dist         # Create Windows installer
 - **AT Protocol API** for Bluesky integration
 
 ### Architecture
-[^1]
 - **Main process**: Handles authentication, feed fetching, window management, config watching
 - **Renderer process**: React UI with post display, animations, overflow management
 - **IPC communication**: Config updates and post streaming between processes
@@ -106,9 +104,3 @@ npm run dist         # Create Windows installer
 ## System Requirements
 - Windows (primary target, includes installer)
 - macOS/Linux (untested but should work)
-
-## License
-Private project by Aricie
-
-[^1]: [main](main.ts) (59%)
-[^2]: [package](package.json) (41%)
