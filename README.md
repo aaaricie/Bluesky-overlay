@@ -62,7 +62,7 @@ npm run dev
 - `appPassword`: Generate at bsky.app → Settings → App Passwords
 
 ### Display Settings
-- [^1]`slotCount`: Number of simultaneous posts (1-100)
+- `slotCount`: Number of simultaneous posts (1-100)
 - `postDisplaySeconds`: Total display time per post cycle
 - `position`: Window position `{x, y}`
 - `clickThrough`: Enable mouse click passthrough
