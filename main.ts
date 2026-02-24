@@ -91,6 +91,7 @@ const WINDOW_WIDTH = 460;
 const MIN_VISIBLE_HEIGHT = 100;
 const TOPMOST_HEARTBEAT_MS = 2_000;
 const AVATAR_FETCH_TIMEOUT_MS = 8_000;
+const FEED_FETCH_TIMEOUT_MS = 20_000;
 
 // ─── Module-level State ──────────────────────────────────────────────────────
 
@@ -543,6 +544,14 @@ async function processFeedItems(
 
 // ─── Fetch ───────────────────────────────────────────────────────────────────
 
+// Wraps a fetch promise with an AbortController timeout so that a hanging
+// network request can never permanently lock fetchBusy.
+function withFetchTimeout<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), FEED_FETCH_TIMEOUT_MS);
+  return task(ac.signal).finally(() => clearTimeout(timer));
+}
+
 async function fetchFromSource(
   source: FeedSource,
   limit: number,
@@ -550,21 +559,21 @@ async function fetchFromSource(
   if (!agent?.session) return [];
   switch (source.kind) {
     case 'timeline': {
-      const { data } = await agent.getTimeline({ limit });
+      const { data } = await withFetchTimeout((signal) =>
+        agent!.getTimeline({ limit }, { signal } as any),
+      );
       return data.feed;
     }
     case 'generator': {
-      const { data } = await agent.app.bsky.feed.getFeed({
-        feed: source.uri,
-        limit,
-      });
+      const { data } = await withFetchTimeout((signal) =>
+        agent!.app.bsky.feed.getFeed({ feed: source.uri, limit }, { signal } as any),
+      );
       return data.feed;
     }
     case 'list': {
-      const { data } = await agent.app.bsky.feed.getListFeed({
-        list: source.uri,
-        limit,
-      });
+      const { data } = await withFetchTimeout((signal) =>
+        agent!.app.bsky.feed.getListFeed({ list: source.uri, limit }, { signal } as any),
+      );
       return data.feed;
     }
   }
@@ -668,6 +677,13 @@ function pump(): void {
     dispTimer = null;
     if (pendingInRenderer > 0) {
       dispTimer = setTimeout(pump, 200);
+      return;
+    }
+    // If a fetch is already in-flight, don't call fetchPosts() — it would
+    // return immediately and leave dispTimer null, permanently killing the
+    // loop. Retry in 2 s so pump() stays alive until the fetch resolves.
+    if (fetchBusy) {
+      dispTimer = setTimeout(pump, 2_000);
       return;
     }
     fetchPosts();
