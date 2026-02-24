@@ -90,6 +90,7 @@ const IDLE_MAX_MS = 15_000;
 const WINDOW_WIDTH = 460;
 const MIN_VISIBLE_HEIGHT = 100;
 const TOPMOST_HEARTBEAT_MS = 2_000;
+const AVATAR_FETCH_TIMEOUT_MS = 8_000;
 
 // ─── Module-level State ──────────────────────────────────────────────────────
 
@@ -364,7 +365,14 @@ async function resolveAvatar(
 
   const task = (async (): Promise<string | null> => {
     try {
-      const res = await fetch(url);
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), AVATAR_FETCH_TIMEOUT_MS);
+      let res: Response;
+      try {
+        res = await fetch(url, { signal: ac.signal });
+      } finally {
+        clearTimeout(timer);
+      }
       if (!res.ok) return null;
       const mime = res.headers.get('content-type') ?? 'image/jpeg';
       const b64 = Buffer.from(await res.arrayBuffer()).toString('base64');
@@ -572,14 +580,14 @@ async function fetchPosts(): Promise<void> {
       feedSource,
       config.advanced.fetchLimit,
     );
-    if (gen !== fetchGen) return;
+    if (gen !== fetchGen) { fetchBusy = false; return; }
 
     console.log(
       `[fetch] ${feedSource.kind} returned ${items.length} item(s)`,
     );
 
     const fresh = await processFeedItems(items, gen);
-    if (gen !== fetchGen) return;
+    if (gen !== fetchGen) { fetchBusy = false; return; }
 
     console.log(
       `[fetch] ${fresh.length} new post(s) after dedup (seen: ${seenSet.size})`,
@@ -795,7 +803,6 @@ function createWindow(): void {
 
   win.on('always-on-top-changed', (_event, isOnTop) => {
     if (!isOnTop && win && !win.isDestroyed()) {
-      console.log('[window] Topmost revoked by OS — re-asserting');
       win.setAlwaysOnTop(true, 'normal');
       win.moveTop();
     }
