@@ -19,9 +19,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-// NOTE: PostAuthor, ParentPost and OverlayPost intentionally mirror the
-// definitions in renderer/types.ts.  Both locations must be kept in sync
-// whenever the data shape changes.
 
 interface AppConfig {
   _WARNING?: string;
@@ -92,6 +89,7 @@ const IDLE_MIN_MS = 10_000;
 const IDLE_MAX_MS = 15_000;
 const WINDOW_WIDTH = 460;
 const MIN_VISIBLE_HEIGHT = 100;
+const TOPMOST_HEARTBEAT_MS = 2_000;
 
 // ─── Module-level State ──────────────────────────────────────────────────────
 
@@ -109,18 +107,14 @@ let fetchBusy = false;
 let fetchGen = 0;
 let dispTimer: ReturnType<typeof setTimeout> | null = null;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
+let topHeartbeat: ReturnType<typeof setInterval> | null = null;
+let moveWriteBounce: ReturnType<typeof setTimeout> | null = null;
 
-// Tracks how many posts have been sent to the renderer but not yet consumed
-// (admitted to screen or skipped by the overflow guard).  pump() will not
-// trigger a fetch while this is non-zero, preventing premature fetches when
-// the overflow guard is holding posts in its pending queue.
 let pendingInRenderer = 0;
-
 let isRepositioning = false;
 
 const queue: OverlayPost[] = [];
 
-// O(1) deduplication via a Set, with an insertion-order array for eviction.
 const seenSet = new Set<string>();
 const seenOrder: string[] = [];
 
@@ -315,8 +309,6 @@ function loadConfig(): AppConfig | null {
   try {
     const raw = fs.readFileSync(cfgPath, 'utf-8');
     const c = sanitise(JSON.parse(raw));
-    // Only write back when sanitise added missing fields, so we don't
-    // trigger the file watcher and cause an infinite reload loop.
     if (JSON.stringify(c) !== JSON.stringify(JSON.parse(raw))) {
       writeConfig(c);
     }
@@ -456,7 +448,6 @@ async function processFeedItems(
   items: any[],
   gen: number,
 ): Promise<OverlayPost[]> {
-  /* Phase 1: kick off ALL avatar downloads in parallel (posts + parents) */
   const avatarPromises: Promise<string | null>[] = [];
   for (const item of items) {
     avatarPromises.push(
@@ -472,7 +463,6 @@ async function processFeedItems(
   await Promise.all(avatarPromises);
   if (gen !== fetchGen) return [];
 
-  /* Phase 2: build OverlayPost objects (avatars are cached) */
   const fresh: OverlayPost[] = [];
 
   for (const item of items) {
@@ -481,7 +471,6 @@ async function processFeedItems(
 
     const rec = post.record as Record<string, unknown>;
 
-    /* ── Parent post (reply thread context) ──────────────────────── */
     let parent: ParentPost | null = null;
     const pp = reply?.parent;
     if (pp?.record) {
@@ -506,7 +495,6 @@ async function processFeedItems(
       };
     }
 
-    /* ── Repost reason ───────────────────────────────────────────── */
     let repostBy: OverlayPost['repostBy'] = null;
     if ((reason as any)?.$type === 'app.bsky.feed.defs#reasonRepost') {
       const by = (reason as any).by;
@@ -712,6 +700,28 @@ function cancelIdle(): void {
   }
 }
 
+// ─── Always-On-Top Heartbeat ─────────────────────────────────────────────────
+
+function startTopHeartbeat(): void {
+  stopTopHeartbeat();
+  topHeartbeat = setInterval(() => {
+    if (win && !win.isDestroyed()) {
+      // Toggle off then on — calling setAlwaysOnTop(true) while the flag
+      // is nominally still true is a no-op on some Windows builds.
+      win.setAlwaysOnTop(false);
+      win.setAlwaysOnTop(true, 'normal');
+      win.moveTop();
+    }
+  }, TOPMOST_HEARTBEAT_MS);
+}
+
+function stopTopHeartbeat(): void {
+  if (topHeartbeat !== null) {
+    clearInterval(topHeartbeat);
+    topHeartbeat = null;
+  }
+}
+
 // ─── Window ──────────────────────────────────────────────────────────────────
 
 function windowHeight(x: number, y: number): number {
@@ -745,7 +755,7 @@ function createWindow(): void {
     },
   });
 
-  win.setAlwaysOnTop(true, 'floating');
+  win.setAlwaysOnTop(true, 'normal');
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   win.setIgnoreMouseEvents(clickThrough);
 
@@ -770,12 +780,28 @@ function createWindow(): void {
       isRepositioning = false;
     }
     config.display.position = { x, y };
-    writeConfig(config);
+    // Debounce the config write so dragging doesn't trigger the file
+    // watcher → reloadConfig → window recreation on every pixel.
+    if (moveWriteBounce) clearTimeout(moveWriteBounce);
+    moveWriteBounce = setTimeout(() => {
+      moveWriteBounce = null;
+      writeConfig(config);
+    }, 1_000);
   });
 
   win.on('closed', () => {
     win = null;
   });
+
+  win.on('always-on-top-changed', (_event, isOnTop) => {
+    if (!isOnTop && win && !win.isDestroyed()) {
+      console.log('[window] Topmost revoked by OS — re-asserting');
+      win.setAlwaysOnTop(true, 'normal');
+      win.moveTop();
+    }
+  });
+
+  startTopHeartbeat();
 }
 
 // ─── Runtime Display Config ──────────────────────────────────────────────────
@@ -785,10 +811,11 @@ async function applyDisplay(): Promise<void> {
   const clamped = clampToScreen(position.x, position.y);
   config.display.position = clamped;
 
+  stopTopHeartbeat();
   stopDisplay();
 
   // Window is being recreated — any posts previously dispatched to the
-  // renderer are lost, so reset the counter to avoid stalling pump().
+  // old renderer are lost, so reset the counter to avoid stalling pump().
   pendingInRenderer = 0;
 
   if (win) {
@@ -950,6 +977,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => {});
   app.on('before-quit', () => {
     watcher?.close();
+    stopTopHeartbeat();
     cancelIdle();
     stopDisplay();
   });
