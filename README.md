@@ -16,6 +16,8 @@ Desktop overlay application that displays your Bluesky feed as rolling timeline 
 
 ## Installation
 
+### **You can either clone the repository or use the setup.exe** Everything needed to run it is included with the installer.
+
 ### Prerequisites
 - Node.js 18+
 - Bluesky account with app password
