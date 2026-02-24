@@ -344,6 +344,11 @@ body {
   font-size: 12px;
 }
 
+.embed-quote-author .timestamp {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
 .embed-quote .post-text {
   font-size: 13px;
 }

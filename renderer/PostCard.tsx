@@ -161,6 +161,7 @@ function EmbedView({
     const qAuthor = rec.author ?? {};
     const qRec = rec.value as Record<string, unknown> | undefined;
     const qEmbeds = rec.embeds as unknown[] | undefined;
+    const qCreatedAt = (qRec?.createdAt ?? rec.indexedAt) as string | undefined;
     return (
       <div className="embed-quote">
         <div className="embed-quote-author">
@@ -174,6 +175,9 @@ function EmbedView({
           )}
           <span className="display-name">{qAuthor.displayName ?? qAuthor.handle}</span>
           <span className="handle">@{qAuthor.handle}</span>
+          {qCreatedAt && (
+            <span className="timestamp">· {relativeTime(qCreatedAt)}</span>
+          )}
         </div>
         {qRec?.text && <div className="post-text">{qRec.text as string}</div>}
         {qEmbeds?.[0] && (
