@@ -580,7 +580,24 @@ async function fetchFromSource(
 }
 
 async function fetchPosts(): Promise<void> {
-  if (fetchBusy || !agent?.session) return;
+  if (fetchBusy) return;
+
+  // ── FIX (Bug 1): handle missing session instead of silently returning ──
+  if (!agent?.session) {
+    console.warn('[fetch] No active session — attempting re-authentication');
+    const ok = await authenticate();
+    if (ok) {
+      feedSource = await resolveFeedSourceDid(
+        parseSource(config.advanced.customFeedUri),
+      );
+      fetchPosts();
+    } else {
+      console.warn('[fetch] Re-auth failed — retrying in 30s');
+      setTimeout(fetchPosts, 30_000);
+    }
+    return;
+  }
+
   fetchBusy = true;
   const gen = fetchGen;
 
@@ -637,6 +654,10 @@ async function fetchPosts(): Promise<void> {
           parseSource(config.advanced.customFeedUri),
         );
         fetchPosts();
+      } else {
+        // ── FIX (Bug 1): retry instead of silently dying ──
+        console.warn('[fetch] Re-auth after 401 failed — retrying in 30s');
+        setTimeout(fetchPosts, 30_000);
       }
       return;
     }
@@ -689,8 +710,17 @@ function pump(): void {
     fetchPosts();
     return;
   }
+
+  // ── FIX (Bug 2): don't dispatch if the window is gone ──
+  if (!win || win.isDestroyed()) {
+    dispTimer = null;
+    queue.length = 0;
+    pendingInRenderer = 0;
+    return;
+  }
+
   pendingInRenderer++;
-  win?.webContents.send('post:new', queue.shift()!);
+  win.webContents.send('post:new', queue.shift()!);
   dispTimer = setTimeout(pump, slotDwellMs());
 }
 
