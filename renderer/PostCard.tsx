@@ -200,8 +200,8 @@ function EmbedView({
             </span>
           )}
         </div>
-        {qRec?.text && <div className="post-text">{qRec.text as string}</div>}
-        {qEmbeds?.[0] && (
+        {typeof qRec?.text === 'string' && <div className="post-text">{qRec.text}</div>}
+        {!!qEmbeds?.[0] && (
           <div className="embed-quote-media">
             <EmbedView
               embed={qEmbeds[0]}
@@ -285,7 +285,7 @@ function ThreadParent({
           </span>
         </div>
         <RichText text={parent.text} facets={parent.facets} />
-        {parent.embed && (
+        {!!parent.embed && (
           <div className="post-embed">
             <EmbedView
               embed={parent.embed}
@@ -354,7 +354,7 @@ export default function PostCard({
 
             <RichText text={post.text} facets={post.facets} />
 
-            {post.embed && (
+            {!!post.embed && (
               <div className="post-embed">
                 <EmbedView
                   embed={post.embed}
