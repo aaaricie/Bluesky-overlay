@@ -1,4 +1,4 @@
-# Bluesky Overlay - Release v1.0.0
+# Bluesky Overlay - Release v1.0.1
 
 Desktop overlay application that displays your Bluesky feed as rolling timeline notifications on top of other applications.
 
