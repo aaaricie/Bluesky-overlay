@@ -94,6 +94,81 @@ const TOPMOST_HEARTBEAT_MS = 2_000;
 const AVATAR_FETCH_TIMEOUT_MS = 8_000;
 const FEED_FETCH_TIMEOUT_MS = 20_000;
 
+// ─── File Logging ─────────────────────────────────────────────────────────────
+
+const MAX_LOG_SIZE = 2 * 1024 * 1024; // 2 MB — rotate when exceeded
+let logStream: fs.WriteStream | null = null;
+
+function setupLogging(logDir: string): void {
+  const logPath = path.join(logDir, 'app.log');
+
+  // Rotate: if the current log exceeds MAX_LOG_SIZE, move it to app.prev.log
+  try {
+    if (fs.existsSync(logPath) && fs.statSync(logPath).size > MAX_LOG_SIZE) {
+      const prevPath = path.join(logDir, 'app.prev.log');
+      if (fs.existsSync(prevPath)) fs.unlinkSync(prevPath);
+      fs.renameSync(logPath, prevPath);
+    }
+  } catch {
+    /* rotation is best-effort */
+  }
+
+  logStream = fs.createWriteStream(logPath, { flags: 'a' });
+
+  const origLog = console.log;
+  const origWarn = console.warn;
+  const origError = console.error;
+
+  function ts(): string {
+    return new Date().toISOString();
+  }
+
+  function fmt(args: unknown[]): string {
+    return args
+      .map((a) => {
+        if (typeof a === 'string') return a;
+        if (a instanceof Error) return a.stack ?? a.message;
+        try {
+          return JSON.stringify(a);
+        } catch {
+          return String(a);
+        }
+      })
+      .join(' ');
+  }
+
+  console.log = (...args: unknown[]) => {
+    origLog(...args);
+    logStream?.write(`${ts()} [LOG]   ${fmt(args)}\n`);
+  };
+  console.warn = (...args: unknown[]) => {
+    origWarn(...args);
+    logStream?.write(`${ts()} [WARN]  ${fmt(args)}\n`);
+  };
+  console.error = (...args: unknown[]) => {
+    origError(...args);
+    logStream?.write(`${ts()} [ERROR] ${fmt(args)}\n`);
+  };
+
+  process.on('uncaughtException', (err) => {
+    logStream?.write(
+      `${ts()} [FATAL] Uncaught exception: ${err.stack ?? err.message}\n`,
+    );
+  });
+  process.on('unhandledRejection', (reason) => {
+    const msg =
+      reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+    logStream?.write(`${ts()} [FATAL] Unhandled rejection: ${msg}\n`);
+  });
+
+  console.log('[log] Logging to', logPath);
+}
+
+function closeLogging(): void {
+  logStream?.end();
+  logStream = null;
+}
+
 // ─── Module-level State ──────────────────────────────────────────────────────
 
 let cfgPath: string;
@@ -347,6 +422,10 @@ function encryptPw(plain: string): string {
     console.warn(
       '[crypto] OS encryption unavailable — password stored as plaintext.',
     );
+    notify(
+      'Security Warning',
+      'OS encryption is unavailable. Your app password is stored as plaintext in config.json.',
+    );
     return plain;
   }
   return ENC_PREFIX + safeStorage.encryptString(plain).toString('base64');
@@ -497,6 +576,10 @@ async function processFeedItems(
 
   for (const item of items) {
     const { post, reply, reason } = item;
+    if (!post?.uri || !post?.author?.did || !post?.author?.handle) {
+      console.warn('[fetch] Skipping malformed feed item (missing post/author fields)');
+      continue;
+    }
     if (alreadySeen(post.uri)) continue;
 
     const rec = post.record as Record<string, unknown>;
@@ -1043,6 +1126,11 @@ function registerIpc(): void {
   ipcMain.handle('config:get', () => config.display);
 
   ipcMain.on('post:consumed', () => {
+    if (pendingInRenderer <= 0) {
+      console.warn(
+        '[ipc] post:consumed received but pendingInRenderer is already 0 — counter desync',
+      );
+    }
     pendingInRenderer = Math.max(0, pendingInRenderer - 1);
   });
 }
@@ -1058,7 +1146,9 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
-    cfgPath = path.join(app.getPath('userData'), 'config.json');
+    const userDataDir = app.getPath('userData');
+    setupLogging(userDataDir);
+    cfgPath = path.join(userDataDir, 'config.json');
     const loaded = loadConfig();
     if (!loaded) {
       // L6: was a silent quit — inform the user so the app doesn't just vanish.
@@ -1110,5 +1200,6 @@ if (!app.requestSingleInstanceLock()) {
     stopTopHeartbeat();
     cancelIdle();
     stopDisplay();
+    closeLogging();
   });
 }

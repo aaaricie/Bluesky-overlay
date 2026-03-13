@@ -23,8 +23,11 @@ function byteToCharIndex(text: string, byteOffset: number): number {
 }
 
 function relativeTime(iso: string, now?: number): string {
-  const diff = ((now ?? Date.now()) - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return `${Math.max(0, Math.floor(diff))}s`;
+  const ts = new Date(iso).getTime();
+  if (Number.isNaN(ts)) return '';
+  const diff = ((now ?? Date.now()) - ts) / 1000;
+  if (diff < 0) return '0s';
+  if (diff < 60) return `${Math.floor(diff)}s`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
   return `${Math.floor(diff / 86400)}d`;

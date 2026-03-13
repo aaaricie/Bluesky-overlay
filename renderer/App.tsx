@@ -98,8 +98,8 @@ export default function App() {
             pendingQueue.current.shift();
             try {
               window.electronAPI.postConsumed();
-            } catch {
-              /* noop */
+            } catch (err) {
+              console.warn('[ipc] postConsumed failed — pendingInRenderer may desync:', err);
             }
           } else {
             break;
@@ -175,8 +175,8 @@ export default function App() {
         updateMeasuredPost(null);
         try {
           window.electronAPI.postConsumed();
-        } catch {
-          /* noop */
+        } catch (err) {
+          console.warn('[ipc] postConsumed failed — pendingInRenderer may desync:', err);
         }
         return;
       }
@@ -190,8 +190,8 @@ export default function App() {
         ]);
         try {
           window.electronAPI.postConsumed();
-        } catch {
-          /* noop */
+        } catch (err) {
+          console.warn('[ipc] postConsumed failed — pendingInRenderer may desync:', err);
         }
       }
       // Whether it fit or not, clear measured state.
@@ -257,8 +257,8 @@ export default function App() {
           pendingQueue.current.shift();
           try {
             window.electronAPI.postConsumed();
-          } catch {
-            /* noop */
+          } catch (err) {
+            console.warn('[ipc] postConsumed failed — pendingInRenderer may desync:', err);
           }
         }
         updateMeasuredPost(null);
@@ -288,16 +288,23 @@ export default function App() {
       setConfig(d);
       applyWidth(d);
     });
+    const configTimeout = setTimeout(() => {
+      console.warn('[config] getConfig timed out after 5s — using defaults');
+    }, 5_000);
     window.electronAPI
       .getConfig()
       .then((d) => {
+        clearTimeout(configTimeout);
         if (d) {
           setConfig(d);
           applyWidth(d);
         }
       })
       // X3: log IPC failures instead of swallowing them silently
-      .catch((err) => console.error('[config] getConfig failed:', err));
+      .catch((err) => {
+        clearTimeout(configTimeout);
+        console.error('[config] getConfig failed:', err);
+      });
     return off;
   }, []);
 
@@ -317,8 +324,8 @@ export default function App() {
         ]);
         try {
           window.electronAPI.postConsumed();
-        } catch {
-          /* noop */
+        } catch (err) {
+          console.warn('[ipc] postConsumed failed — pendingInRenderer may desync:', err);
         }
       }
     }
@@ -337,8 +344,8 @@ export default function App() {
         ]);
         try {
           window.electronAPI.postConsumed();
-        } catch {
-          /* noop */
+        } catch (err) {
+          console.warn('[ipc] postConsumed failed — pendingInRenderer may desync:', err);
         }
       }
     });
