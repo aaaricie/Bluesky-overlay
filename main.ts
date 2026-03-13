@@ -28,6 +28,7 @@ interface AppConfig {
     postDisplaySeconds: number;
     position: { x: number; y: number };
     clickThrough: boolean;
+    windowWidth: number;
     overflowGuard: {
       enabled: boolean;
       maxHeightPercent: number;
@@ -115,6 +116,11 @@ let moveWriteBounce: ReturnType<typeof setTimeout> | null = null;
 let pendingInRenderer = 0;
 let pendingInRendererSince: number = 0;
 let isRepositioning = false;
+
+// C1: prevents two concurrent reloadConfig() calls from racing on shared state
+let reloadInProgress = false;
+// C2: timestamp set by writeConfig() so the file watcher can skip self-triggered reloads
+let selfWriteUntil = 0;
 
 const queue: OverlayPost[] = [];
 
@@ -225,7 +231,7 @@ async function resolveFeedSourceDid(src: FeedSource): Promise<FeedSource> {
 
 function clampToScreen(x: number, y: number): { x: number; y: number } {
   const { workArea } = screen.getDisplayNearestPoint({ x, y });
-  const maxX = workArea.x + workArea.width - WINDOW_WIDTH;
+  const maxX = workArea.x + workArea.width - (config?.display?.windowWidth ?? WINDOW_WIDTH);
   const maxY = workArea.y + workArea.height - MIN_VISIBLE_HEIGHT;
   return {
     x: Math.max(workArea.x, Math.min(x, maxX)),
@@ -245,6 +251,7 @@ function defaultConfig(): AppConfig {
       postDisplaySeconds: 30,
       position: { x: 100, y: 100 },
       clickThrough: true,
+      windowWidth: 460,
       overflowGuard: {
         enabled: true,
         maxHeightPercent: 100,
@@ -255,6 +262,8 @@ function defaultConfig(): AppConfig {
 }
 
 function writeConfig(c: AppConfig): void {
+  // C2: stamp the time so watchConfig()'s debounce can skip this self-write
+  selfWriteUntil = Date.now() + 600; // must exceed the 500ms debounce
   fs.writeFileSync(cfgPath, JSON.stringify(c, null, 2), 'utf-8');
 }
 
@@ -294,6 +303,10 @@ function sanitise(c: AppConfig): AppConfig {
     Math.min(100, c.advanced.fetchLimit ?? d.advanced.fetchLimit),
   );
   c.advanced.customFeedUri ??= d.advanced.customFeedUri;
+  c.display.windowWidth = Math.max(
+    300,
+    Math.min(800, c.display.windowWidth ?? d.display.windowWidth),
+  );
   const clamped = clampToScreen(
     c.display.position.x,
     c.display.position.y,
@@ -458,20 +471,27 @@ async function processFeedItems(
   items: any[],
   gen: number,
 ): Promise<OverlayPost[]> {
-  const avatarPromises: Promise<string | null>[] = [];
+  // Phase 1: collect unique DIDs → avatar URL mappings and fetch all concurrently.
+  // We capture the results directly so phase 2 doesn't need to call resolveAvatar()
+  // again — a second call risks a cache miss if the LRU evicted entries under load.
+  const didToUrl = new Map<string, string | undefined>();
   for (const item of items) {
-    avatarPromises.push(
-      resolveAvatar(item.post.author.did, item.post.author.avatar),
-    );
+    if (!didToUrl.has(item.post.author.did)) {
+      didToUrl.set(item.post.author.did, item.post.author.avatar);
+    }
     const pp = item.reply?.parent;
-    if (pp?.record) {
-      avatarPromises.push(
-        resolveAvatar(pp.author.did, pp.author.avatar),
-      );
+    if (pp?.record && !didToUrl.has(pp.author.did)) {
+      didToUrl.set(pp.author.did, pp.author.avatar);
     }
   }
-  await Promise.all(avatarPromises);
+  const didList = [...didToUrl.entries()];
+  const resolvedList = await Promise.all(
+    didList.map(([did, url]) => resolveAvatar(did, url)),
+  );
   if (gen !== fetchGen) return [];
+  const avatarMap = new Map<string, string | null>(
+    didList.map(([did], i) => [did, resolvedList[i]]),
+  );
 
   const fresh: OverlayPost[] = [];
 
@@ -493,7 +513,7 @@ async function processFeedItems(
           handle: pp.author.handle,
           displayName: pp.author.displayName ?? pp.author.handle,
           avatarUrl: pp.author.avatar ?? null,
-          avatarDataUri: await resolveAvatar(pp.author.did, pp.author.avatar),
+          avatarDataUri: avatarMap.get(pp.author.did) ?? null,
         },
         text: (ppRec.text as string) ?? '',
         facets: (ppRec.facets as unknown[]) ?? [],
@@ -523,10 +543,7 @@ async function processFeedItems(
         handle: post.author.handle,
         displayName: post.author.displayName ?? post.author.handle,
         avatarUrl: post.author.avatar ?? null,
-        avatarDataUri: await resolveAvatar(
-          post.author.did,
-          post.author.avatar,
-        ),
+        avatarDataUri: avatarMap.get(post.author.did) ?? null,
       },
       text: (rec.text as string) ?? '',
       facets: (rec.facets as unknown[]) ?? [],
@@ -728,8 +745,11 @@ function pump(): void {
     return;
   }
 
+  // M1: only stamp the time when pendingInRenderer transitions from 0 → 1.
+  // Stamping on every dispatch kept the timestamp perpetually fresh during
+  // large queue flushes, preventing the 10-second stuck guard from firing.
+  if (pendingInRenderer === 0) pendingInRendererSince = Date.now();
   pendingInRenderer++;
-  pendingInRendererSince = Date.now();
   win.webContents.send('post:new', queue.shift()!);
   dispTimer = setTimeout(pump, slotDwellMs());
 }
@@ -769,6 +789,10 @@ function cancelIdle(): void {
 function startTopHeartbeat(): void {
   stopTopHeartbeat();
   topHeartbeat = setInterval(() => {
+    // L1: heartbeat is only needed when click-through (always-on-top) is active.
+    // During movable/repositioning mode the window is intentionally focusable
+    // and toggling always-on-top would disrupt other AOT windows unnecessarily.
+    if (!config?.display?.clickThrough) return;
     if (win && !win.isDestroyed()) {
       // Toggle off then on — calling setAlwaysOnTop(true) while the flag
       // is nominally still true is a no-op on some Windows builds.
@@ -798,9 +822,10 @@ function createWindow(): void {
   const { position, clickThrough } = config.display;
   const clamped = clampToScreen(position.x, position.y);
   config.display.position = clamped;
+  const winWidth = config.display.windowWidth;
 
   win = new BrowserWindow({
-    width: WINDOW_WIDTH,
+    width: winWidth,
     height: windowHeight(clamped.x, clamped.y),
     x: clamped.x,
     y: clamped.y,
@@ -838,7 +863,7 @@ function createWindow(): void {
       win.setBounds({
         x,
         y,
-        width: WINDOW_WIDTH,
+        width: config.display.windowWidth,
         height: windowHeight(x, y),
       });
       isRepositioning = false;
@@ -886,6 +911,16 @@ async function applyDisplay(): Promise<void> {
     win = null;
   }
 
+  // H1: resolve the feed source DID *before* creating the window so the first
+  // fetchPosts() call (triggered by did-finish-load) uses the correct source.
+  // Previously this awaited *after* createWindow(), so the renderer finished
+  // loading (~80-150ms) before handle resolution finished (~200-800ms), causing
+  // the first fetch to use the stale pre-reload feedSource.
+  feedSource = await resolveFeedSourceDid(
+    parseSource(config.advanced.customFeedUri),
+  );
+  logSource('source', feedSource);
+
   createWindow();
 
   win!.webContents.once('did-finish-load', () => {
@@ -896,11 +931,6 @@ async function applyDisplay(): Promise<void> {
       fetchPosts();
     }
   });
-
-  feedSource = await resolveFeedSourceDid(
-    parseSource(config.advanced.customFeedUri),
-  );
-  logSource('source', feedSource);
 }
 
 // ─── Config File Watcher ─────────────────────────────────────────────────────
@@ -912,6 +942,10 @@ function watchConfig(): void {
     if (bounce) clearTimeout(bounce);
     bounce = setTimeout(() => {
       bounce = null;
+      // C2: if this write was triggered by writeConfig() itself (e.g. sanitise,
+      // decryptPw, or drag debounce), skip reloading — selfWriteUntil extends
+      // 100ms past this debounce so the check is always valid here.
+      if (Date.now() < selfWriteUntil) return;
       if (fs.existsSync(cfgPath)) reloadConfig();
     }, 500);
   });
@@ -919,42 +953,62 @@ function watchConfig(): void {
 }
 
 async function reloadConfig(): Promise<void> {
-  const prevAuth = {
-    handle: config.auth.handle,
-    pw: config.auth.appPassword,
-  };
-  const loaded = loadConfig();
-  if (!loaded) return;
-  config = loaded;
-
-  const credsChanged =
-    prevAuth.handle !== config.auth.handle ||
-    prevAuth.pw !== config.auth.appPassword;
-
-  if (credsChanged) {
-    console.log('[config] Credentials changed — re-authenticating');
-    cancelIdle();
-    stopDisplay();
-    queue.length = 0;
-    clearSeen();
-    fetchBusy = false;
-    fetchGen++;
-    pendingInRenderer = 0;
-    const ok = await authenticate();
-    if (ok) fetchPosts();
-  } else {
-    cancelIdle();
-    queue.length = 0;
-    clearSeen();
-    fetchBusy = false;
+  // C1: prevent two concurrent reloadConfig() calls from racing on shared state.
+  // The watcher debounce is only 500ms but reloadConfig can take 1–6s (auth +
+  // handle resolution). If a second watcher event arrives during that window,
+  // we drop it — the user can save again if needed.
+  if (reloadInProgress) {
+    console.log('[config] Reload already in progress — skipping concurrent trigger');
+    return;
   }
+  reloadInProgress = true;
 
-  await applyDisplay();
+  try {
+    const prevAuth = {
+      handle: config.auth.handle,
+      pw: config.auth.appPassword,
+    };
+    const loaded = loadConfig();
+    if (!loaded) return;
+    config = loaded;
 
-  // Re-arm the watcher: editors that perform atomic saves (write-to-temp +
-  // rename) change the file's inode, which causes fs.watch to silently stop
-  // firing after the first reload.
-  watchConfig();
+    const credsChanged =
+      prevAuth.handle !== config.auth.handle ||
+      prevAuth.pw !== config.auth.appPassword;
+
+    if (credsChanged) {
+      console.log('[config] Credentials changed — re-authenticating');
+      cancelIdle();
+      stopDisplay();
+      queue.length = 0;
+      clearSeen();
+      fetchBusy = false;
+      fetchGen++;
+      pendingInRenderer = 0;
+      await authenticate();
+      // H2: do NOT call fetchPosts() here. applyDisplay() → did-finish-load
+      // will call fetchPosts() once the renderer is confirmed ready, preventing
+      // IPC messages being sent before the listener is registered.
+    } else {
+      cancelIdle();
+      queue.length = 0;
+      clearSeen();
+      fetchBusy = false;
+      // H3: increment fetchGen in the non-creds path too. Without this, any
+      // in-flight fetch with the old gen passes the gen !== fetchGen guard and
+      // enqueues stale results into the freshly-cleared queue.
+      fetchGen++;
+    }
+
+    await applyDisplay();
+
+    // Re-arm the watcher: editors that perform atomic saves (write-to-temp +
+    // rename) change the file's inode, which causes fs.watch to silently stop
+    // firing after the first reload.
+    watchConfig();
+  } finally {
+    reloadInProgress = false;
+  }
 }
 
 // ─── System Tray ─────────────────────────────────────────────────────────────
@@ -1006,12 +1060,25 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     cfgPath = path.join(app.getPath('userData'), 'config.json');
     const loaded = loadConfig();
-    if (!loaded) { app.quit(); return; }
+    if (!loaded) {
+      // L6: was a silent quit — inform the user so the app doesn't just vanish.
+      new Notification({
+        title: 'Bluesky Overlay',
+        body: 'Config file created. Fill in your handle and app password, then relaunch.',
+      }).show();
+      setTimeout(() => app.quit(), 500);
+      return;
+    }
     config = loaded;
 
     if (!config.auth.handle || !config.auth.appPassword) {
       openConfig();
-      app.quit();
+      // L6: was a silent quit — explain why the app is closing.
+      new Notification({
+        title: 'Bluesky Overlay',
+        body: 'Credentials missing. Add your handle and app password to config.json, then relaunch.',
+      }).show();
+      setTimeout(() => app.quit(), 500);
       return;
     }
 

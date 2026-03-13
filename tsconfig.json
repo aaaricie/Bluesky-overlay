@@ -1,19 +1,15 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "commonjs",
-    "moduleResolution": "node",
-    "outDir": "dist",
-    "rootDir": ".",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "sourceMap": true,
-    "declaration": false,
-    "lib": ["ES2022"]
+    "isolatedModules": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "include": ["main.ts", "preload.ts"],
-  "exclude": ["renderer", "node_modules", "dist"]
+  "include": ["./**/*.ts", "./**/*.tsx"]
 }
