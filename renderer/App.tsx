@@ -8,6 +8,7 @@ const DEFAULT_CONFIG: DisplayConfig = {
   postDisplaySeconds: 5,
   position: { x: 100, y: 100 },
   clickThrough: true,
+  windowWidth: 460,
   overflowGuard: { enabled: false, maxHeightPercent: 80 },
 };
 
@@ -243,8 +244,23 @@ export default function App() {
         evaluate();
       } else {
         console.warn(
-          '[overflow-guard] Fallback: card height still 0 after timeout, clearing measured post',
+          '[overflow-guard] Fallback: card height still 0 after timeout — dropping post',
         );
+        // M2: the original code only cleared measuredPost here, leaving the post
+        // in pendingQueue and never calling postConsumed(). The post would then
+        // stall for ~10s (MAX_PENDING_ATTEMPTS × minRetryGap) before being purged.
+        // Fix: drop it now and unblock main's pump counter immediately.
+        if (
+          pendingQueue.current.length > 0 &&
+          pendingQueue.current[0].post.uri === measuredPost!.uri
+        ) {
+          pendingQueue.current.shift();
+          try {
+            window.electronAPI.postConsumed();
+          } catch {
+            /* noop */
+          }
+        }
         updateMeasuredPost(null);
       }
     }, 2500);
@@ -260,12 +276,28 @@ export default function App() {
 
   /* ── Config IPC listener (mount-only) ────────────────────────────── */
   useEffect(() => {
-    const off = window.electronAPI.onConfigUpdate((d: DisplayConfig) =>
-      setConfig(d),
-    );
-    window.electronAPI.getConfig().then((d) => {
-      if (d) setConfig(d);
+    const applyWidth = (d: DisplayConfig) => {
+      // L4: derive measure-container width from config so it tracks windowWidth
+      document.documentElement.style.setProperty(
+        '--app-width',
+        `${d.windowWidth ?? 460}px`,
+      );
+    };
+
+    const off = window.electronAPI.onConfigUpdate((d: DisplayConfig) => {
+      setConfig(d);
+      applyWidth(d);
     });
+    window.electronAPI
+      .getConfig()
+      .then((d) => {
+        if (d) {
+          setConfig(d);
+          applyWidth(d);
+        }
+      })
+      // X3: log IPC failures instead of swallowing them silently
+      .catch((err) => console.error('[config] getConfig failed:', err));
     return off;
   }, []);
 
@@ -274,6 +306,9 @@ export default function App() {
     // When switching from overflow-guard enabled → disabled, flush any
     // orphaned pending posts so they are not silently lost.
     if (!config.overflowGuard.enabled && pendingQueue.current.length > 0) {
+      // M3: clear measuredPost immediately so the measurement effect doesn't
+      // evaluate a post that's about to be flushed directly to visible posts.
+      updateMeasuredPost(null);
       const orphaned = pendingQueue.current.splice(0);
       for (const entry of orphaned) {
         setPosts((prev) => [

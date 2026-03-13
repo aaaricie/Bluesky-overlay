@@ -271,7 +271,7 @@ body {
 }
 
 .embed-external-info {
-  padding: 6px 8px;
+  padding: 8px 8px; /* 8px top/bottom (was 6px) for visual breathing room */
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -311,9 +311,10 @@ body {
   padding: 8px 10px;
 }
 
-/* Space between media (images/video) and a following quote block */
+/* Space between media (images/video/external-link) and a following quote block */
 .embed-images + .embed-quote,
-.embed-video + .embed-quote {
+.embed-video + .embed-quote,
+.embed-external + .embed-quote {
   margin-top: 8px;
 }
 
@@ -447,7 +448,9 @@ body {
   position: fixed;
   top: 0;
   left: 0;
-  width: 444px;
+  /* L4: derived from --app-width set by renderer when config updates.
+     16px = 2 × 8px padding on .overlay-container. Fallback 460px = default WINDOW_WIDTH. */
+  width: calc(var(--app-width, 460px) - 16px);
   opacity: 0;
   pointer-events: none;
   z-index: -1;

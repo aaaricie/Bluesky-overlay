@@ -39,6 +39,7 @@ export interface DisplayConfig {
   postDisplaySeconds: number;
   position: { x: number; y: number };
   clickThrough: boolean;
+  windowWidth: number;
   overflowGuard: {
     enabled: boolean;
     maxHeightPercent: number; // 1–100

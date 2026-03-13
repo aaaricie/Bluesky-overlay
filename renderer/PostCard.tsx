@@ -51,9 +51,20 @@ function RichText({ text, facets }: { text: string; facets: unknown[] }) {
   for (const f of sorted) {
     const bs = f.index?.byteStart ?? 0;
     const be = f.index?.byteEnd ?? 0;
-    const cs = byteToCharIndex(text, bs);
+    // L3: clamp cs so we never go before cursor (handles overlapping facets
+    // where a facet starts inside a previously rendered region).
+    const cs = Math.max(byteToCharIndex(text, bs), cursor);
     const ce = byteToCharIndex(text, be);
+
     if (cs > cursor) segments.push({ start: cursor, end: cs, type: 'text' });
+
+    // L3: if ce <= cursor the facet is entirely nested inside a previous one —
+    // skip it rather than pushing a zero-length or backwards segment.
+    if (ce <= cursor) {
+      console.warn('[richtext] Skipping overlapping/nested facet');
+      continue;
+    }
+
     const feat = f.features?.[0];
     if (feat?.$type === 'app.bsky.richtext.facet#link') {
       segments.push({ start: cs, end: ce, type: 'link', href: feat.uri });
@@ -64,7 +75,9 @@ function RichText({ text, facets }: { text: string; facets: unknown[] }) {
     } else {
       segments.push({ start: cs, end: ce, type: 'text' });
     }
-    cursor = ce;
+    // L3: clamp cursor forward — never let it go backwards (guards against
+    // nested facets whose ce is less than the current cursor).
+    cursor = Math.max(cursor, ce);
   }
   if (cursor < text.length)
     segments.push({ start: cursor, end: text.length, type: 'text' });
