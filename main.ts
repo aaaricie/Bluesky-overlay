@@ -439,7 +439,7 @@ function decryptPw(stored: string): string {
   }
   return safeStorage.decryptString(
     Buffer.from(stored.slice(ENC_PREFIX.length), 'base64'),
-  );
+  ).trim();
 }
 
 // ─── Avatar LRU Cache ────────────────────────────────────────────────────────
